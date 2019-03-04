@@ -32,11 +32,12 @@
 #include <iostream>
 #include <cassert>
 
-static const char *sSDKsample = "Add Latency Test to CUDA Bandwidth Test";
+static const char *sSDKsample = "Latency and Bandwidth Test";
 
 // defines, project
-#define MEMCOPY_ITERATIONS  100
+#define MEMCOPY_ITERATIONS  1000
 #define DEFAULT_SIZE        ( 32 * ( 1 << 20 ) )    //32 M
+#define DEFAULT_SIZE_For_Test_Latency        ( 64 )
 #define DEFAULT_INCREMENT   (1 << 22)               //4 M
 #define CACHE_CLEAR_SIZE    (1 << 24)               //16 M
 
@@ -87,8 +88,11 @@ char **pArgv = NULL;
 ////////////////////////////////////////////////////////////////////////////////
 // declaration, forward
 int runBandwidthTest(const int argc, const char **argv);
+int runLatencyTest(const int argc, const char **argv);
 void testBandwidth(unsigned int start, unsigned int end, unsigned int increment,
                    testMode mode, memcpyKind kind, printMode printmode, memoryMode memMode, int startDevice, int endDevice, bool wc);
+void testLatency(unsigned int size, memcpyKind kind, printMode printmode,
+		memoryMode memMode, int startDevice, int endDevice, bool wc);
 void testBandwidthQuick(unsigned int size, memcpyKind kind, printMode printmode, memoryMode memMode, int startDevice, int endDevice, bool wc);
 void testBandwidthRange(unsigned int start, unsigned int end, unsigned int increment,
                         memcpyKind kind, printMode printmode, memoryMode memMode, int startDevice, int endDevice, bool wc);
@@ -96,6 +100,8 @@ void testBandwidthShmoo(memcpyKind kind, printMode printmode, memoryMode memMode
 float testDeviceToHostTransfer(unsigned int memSize, memoryMode memMode, bool wc);
 float testHostToDeviceTransfer(unsigned int memSize, memoryMode memMode, bool wc);
 float testDeviceToDeviceTransfer(unsigned int memSize);
+float testLatencyDeviceToHostTransfer(unsigned int memSize, memoryMode memMode, bool wc);
+float testLatencyHostToDeviceTransfer(unsigned int memSize, memoryMode memMode, bool wc);
 void printResultsReadable(unsigned int *memSizes, double *bandwidths, unsigned int count, memcpyKind kind, memoryMode memMode, int iNumDevs, bool wc);
 void printResultsCSV(unsigned int *memSizes, double *bandwidths, unsigned int count, memcpyKind kind, memoryMode memMode, int iNumDevs, bool wc);
 void printHelp(void);
@@ -112,6 +118,13 @@ int main(int argc, char **argv)
     printf("[%s] - Starting...\n", sSDKsample);
 
     int iRetVal = runBandwidthTest(argc, (const char **)argv);
+
+    if (iRetVal < 0)
+    {
+        checkCudaErrors(cudaSetDevice(0));
+    }
+
+    iRetVal = runLatencyTest(argc, (const char **)argv);
 
     if (iRetVal < 0)
     {
@@ -216,8 +229,12 @@ int runBandwidthTest(const int argc, const char **argv)
             }
         }
     }
+    else
+    {
+    	printf("Device No is not set, use the default device: 0.\n");
+    }
 
-    printf("Running on...\n\n");
+    printf("Running Bandwidth ...\n\n");
 
     for (int currentDevice = startDevice; currentDevice <= endDevice; currentDevice++)
     {
@@ -402,6 +419,171 @@ int runBandwidthTest(const int argc, const char **argv)
     return 0;
 }
 
+int runLatencyTest(const int argc, const char **argv)
+{
+	unsigned int size = DEFAULT_SIZE_For_Test_Latency;
+    int startDevice = 0;
+    int endDevice = 0;
+    bool htod = false;
+    bool dtoh = false;
+    bool wc = false;
+    char *device = NULL;
+    printMode printmode = USER_READABLE;
+    char *memModeStr = NULL;
+    memoryMode memMode = PINNED;
+
+    //process command line args
+    if (checkCmdLineFlag(argc, argv, "help"))
+    {
+        printHelp();
+        return 0;
+    }
+
+    if (checkCmdLineFlag(argc, argv, "csv"))
+    {
+        printmode = CSV;
+    }
+
+    if (getCmdLineArgumentString(argc, argv, "memory", &memModeStr))
+    {
+        if (strcmp(memModeStr, "pageable") == 0)
+        {
+            memMode = PAGEABLE;
+        }
+        else if (strcmp(memModeStr, "pinned") == 0)
+        {
+            memMode = PINNED;
+        }
+        else
+        {
+            printf("Invalid memory mode - valid modes are pageable or pinned\n");
+            printf("See --help for more information\n");
+            return -1000;
+        }
+    }
+    else
+    {
+        //default - pinned memory
+        memMode = PINNED;
+    }
+
+    if (getCmdLineArgumentString(argc, argv, "device", &device))
+    {
+        int deviceCount;
+        cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
+
+        if (error_id != cudaSuccess)
+        {
+            printf("cudaGetDeviceCount returned %d\n-> %s\n", (int)error_id, cudaGetErrorString(error_id));
+            exit(EXIT_FAILURE);
+        }
+
+        if (deviceCount == 0)
+        {
+            printf("!!!!!No devices found!!!!!\n");
+            return -2000;
+        }
+
+        if (strcmp(device, "all") == 0)
+        {
+            printf("\n!!!!!Cumulative Bandwidth to be computed from all the devices !!!!!!\n\n");
+            startDevice = 0;
+            endDevice = deviceCount-1;
+        }
+        else
+        {
+            startDevice = endDevice = atoi(device);
+
+            if (startDevice >= deviceCount || startDevice < 0)
+            {
+                printf("\n!!!!!Invalid GPU number %d given hence default gpu %d will be used !!!!!\n", startDevice,0);
+                startDevice = endDevice = 0;
+            }
+        }
+    }
+    else
+    {
+    	printf("Device No is not set, use the default device: 0.\n");
+    }
+
+    printf("Running Latency ...\n\n");
+
+    for (int currentDevice = startDevice; currentDevice <= endDevice; currentDevice++)
+    {
+        cudaDeviceProp deviceProp;
+        cudaError_t error_id = cudaGetDeviceProperties(&deviceProp, currentDevice);
+
+        if (error_id == cudaSuccess)
+        {
+            printf(" Device %d: %s\n", currentDevice, deviceProp.name);
+
+            if (deviceProp.computeMode == cudaComputeModeProhibited)
+            {
+                fprintf(stderr, "Error: device is running in <Compute Mode Prohibited>, no threads can use ::cudaSetDevice().\n");
+                checkCudaErrors(cudaSetDevice(currentDevice));
+
+                exit(EXIT_FAILURE);
+            }
+        }
+        else
+        {
+            printf("cudaGetDeviceProperties returned %d\n-> %s\n", (int)error_id, cudaGetErrorString(error_id));
+            checkCudaErrors(cudaSetDevice(currentDevice));
+
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (checkCmdLineFlag(argc, argv, "htod"))
+    {
+        htod = true;
+    }
+
+    if (checkCmdLineFlag(argc, argv, "dtoh"))
+    {
+        dtoh = true;
+    }
+
+#if CUDART_VERSION >= 2020
+
+    if (checkCmdLineFlag(argc, argv, "wc"))
+    {
+        wc = true;
+    }
+
+#endif
+
+    if (checkCmdLineFlag(argc, argv, "cputiming"))
+    {
+        bDontUseGPUTiming = true;
+    }
+
+    if (!htod && !dtoh)
+    {
+        //default:  All
+        htod = true;
+        dtoh = true;
+    }
+
+    if (htod)
+    {
+        testLatency((unsigned int)size, HOST_TO_DEVICE, printmode, memMode, startDevice, endDevice, wc);
+    }
+
+    if (dtoh)
+    {
+        testLatency((unsigned int)size, DEVICE_TO_HOST, printmode, memMode, startDevice, endDevice, wc);
+    }
+
+    // Ensure that we reset all CUDA Devices in question
+    for (int nDevice = startDevice; nDevice <= endDevice; nDevice++)
+    {
+        cudaSetDevice(nDevice);
+    }
+
+    return 0;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 //  Run a bandwidth test
 ///////////////////////////////////////////////////////////////////////////////
@@ -426,6 +608,44 @@ testBandwidth(unsigned int start, unsigned int end, unsigned int increment,
         default:
             break;
     }
+}
+
+void testLatency(unsigned int size, memcpyKind kind, printMode printmode,
+		memoryMode memMode, int startDevice, int endDevice, bool wc)
+{
+    // Use the device asked by the user
+    for (int currentDevice = startDevice; currentDevice <= endDevice; currentDevice++)
+    {
+        cudaSetDevice(currentDevice);
+
+		switch (kind)
+		{
+			case HOST_TO_DEVICE:
+			{
+				float latencyHostToDeviceTransfer = 0.0;
+				latencyHostToDeviceTransfer = testLatencyHostToDeviceTransfer(size, memMode, wc);
+				printf("Latency (MicroSeconds) Host to Device Transfer %f.\n", latencyHostToDeviceTransfer);
+				break;
+			}
+
+			case DEVICE_TO_HOST:
+			{
+				float latencyDeviceToHostTransfer = 0.0;
+				latencyDeviceToHostTransfer = testLatencyDeviceToHostTransfer(size, memMode, wc);
+				printf("Latency (MicroSeconds) Device to Host Transfer %f.\n", latencyDeviceToHostTransfer);
+				break;
+			}
+
+			default:
+				break;
+		}
+
+    } // Complete the bandwidth computation on all the devices
+
+    //print results
+
+
+
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -716,6 +936,118 @@ testDeviceToHostTransfer(unsigned int memSize, memoryMode memMode, bool wc)
     return bandwidthInMBs;
 }
 
+float
+testLatencyDeviceToHostTransfer(unsigned int memSize, memoryMode memMode, bool wc)
+{
+	float latencyInMicroSeconds = 0.0;
+
+    StopWatchInterface *timer = NULL;
+    float elapsedTimeInMs = 0.0f;
+    unsigned char *h_idata = NULL;
+    unsigned char *h_odata = NULL;
+    cudaEvent_t start, stop;
+
+    sdkCreateTimer(&timer);
+    checkCudaErrors(cudaEventCreate(&start));
+    checkCudaErrors(cudaEventCreate(&stop));
+
+    //allocate host memory
+    if (PINNED == memMode)
+    {
+        //pinned memory mode - use special function to get OS-pinned memory
+#if CUDART_VERSION >= 2020
+        checkCudaErrors(cudaHostAlloc((void **)&h_idata, memSize, (wc) ? cudaHostAllocWriteCombined : 0));
+        checkCudaErrors(cudaHostAlloc((void **)&h_odata, memSize, (wc) ? cudaHostAllocWriteCombined : 0));
+#else
+        checkCudaErrors(cudaMallocHost((void **)&h_idata, memSize));
+        checkCudaErrors(cudaMallocHost((void **)&h_odata, memSize));
+#endif
+    }
+    else
+    {
+        //pageable memory mode - use malloc
+        h_idata = (unsigned char *)malloc(memSize);
+        h_odata = (unsigned char *)malloc(memSize);
+
+        if (h_idata == 0 || h_odata == 0)
+        {
+            fprintf(stderr, "Not enough memory avaialable on host to run test!\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    //initialize the memory
+    for (unsigned int i = 0; i < memSize/sizeof(unsigned char); i++)
+    {
+        h_idata[i] = (unsigned char)(i & 0xff);
+    }
+
+    // allocate device memory
+    unsigned char *d_idata;
+    checkCudaErrors(cudaMalloc((void **) &d_idata, memSize));
+
+    //initialize the device memory
+    checkCudaErrors(cudaMemcpy(d_idata, h_idata, memSize,
+                               cudaMemcpyHostToDevice));
+
+    //copy data from GPU to Host
+    sdkStartTimer(&timer);
+    checkCudaErrors(cudaEventRecord(start, 0));
+
+    if (PINNED == memMode)
+    {
+        for (unsigned int i = 0; i < MEMCOPY_ITERATIONS; i++)
+        {
+            checkCudaErrors(cudaMemcpy(h_odata, d_idata, memSize,
+            		                   cudaMemcpyDeviceToHost));
+        }
+    }
+    else
+    {
+        for (unsigned int i = 0; i < MEMCOPY_ITERATIONS; i++)
+        {
+            checkCudaErrors(cudaMemcpy(h_odata, d_idata, memSize,
+                                       cudaMemcpyDeviceToHost));
+        }
+    }
+
+    checkCudaErrors(cudaEventRecord(stop, 0));
+
+    // make sure GPU has finished copying
+    checkCudaErrors(cudaDeviceSynchronize());
+    //get the total elapsed time in ms
+    sdkStopTimer(&timer);
+    checkCudaErrors(cudaEventElapsedTime(&elapsedTimeInMs, start, stop));
+
+    if (PINNED != memMode || bDontUseGPUTiming)
+    {
+        elapsedTimeInMs = sdkGetTimerValue(&timer);
+    }
+
+    //calculate latency in milliseconds
+    latencyInMicroSeconds = (elapsedTimeInMs*1000) / (float)MEMCOPY_ITERATIONS;
+
+    //clean up memory
+    checkCudaErrors(cudaEventDestroy(stop));
+    checkCudaErrors(cudaEventDestroy(start));
+    sdkDeleteTimer(&timer);
+
+    if (PINNED == memMode)
+    {
+        checkCudaErrors(cudaFreeHost(h_idata));
+        checkCudaErrors(cudaFreeHost(h_odata));
+    }
+    else
+    {
+        free(h_idata);
+        free(h_odata);
+    }
+
+    checkCudaErrors(cudaFree(d_idata));
+
+    return latencyInMicroSeconds;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 //! test the bandwidth of a host to device memcopy of a specific size
 ///////////////////////////////////////////////////////////////////////////////
@@ -837,6 +1169,115 @@ testHostToDeviceTransfer(unsigned int memSize, memoryMode memMode, bool wc)
     checkCudaErrors(cudaFree(d_idata));
 
     return bandwidthInMBs;
+}
+
+float
+testLatencyHostToDeviceTransfer(unsigned int memSize, memoryMode memMode, bool wc)
+{
+	float latencyInMicroSeconds = 0.0;
+
+    StopWatchInterface *timer = NULL;
+    float elapsedTimeInMs = 0.0f;
+    cudaEvent_t start, stop;
+    sdkCreateTimer(&timer);
+    checkCudaErrors(cudaEventCreate(&start));
+    checkCudaErrors(cudaEventCreate(&stop));
+
+    //allocate host memory
+    unsigned char *h_odata = NULL;
+
+    if (PINNED == memMode)
+    {
+#if CUDART_VERSION >= 2020
+        //pinned memory mode - use special function to get OS-pinned memory
+        checkCudaErrors(cudaHostAlloc((void **)&h_odata, memSize, (wc) ? cudaHostAllocWriteCombined : 0));
+#else
+        //pinned memory mode - use special function to get OS-pinned memory
+        checkCudaErrors(cudaMallocHost((void **)&h_odata, memSize));
+#endif
+    }
+    else
+    {
+        //pageable memory mode - use malloc
+        h_odata = (unsigned char *)malloc(memSize);
+
+        if (h_odata == 0)
+        {
+            fprintf(stderr, "Not enough memory available on host to run test!\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    unsigned char *h_cacheClear1 = (unsigned char *)malloc(CACHE_CLEAR_SIZE);
+    unsigned char *h_cacheClear2 = (unsigned char *)malloc(CACHE_CLEAR_SIZE);
+
+    if (h_cacheClear1 == 0 || h_cacheClear2 == 0)
+    {
+        fprintf(stderr, "Not enough memory available on host to run test!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    //initialize the memory
+    for (unsigned int i = 0; i < memSize/sizeof(unsigned char); i++)
+    {
+        h_odata[i] = (unsigned char)(i & 0xff);
+    }
+
+    for (unsigned int i = 0; i < CACHE_CLEAR_SIZE / sizeof(unsigned char); i++)
+    {
+        h_cacheClear1[i] = (unsigned char)(i & 0xff);
+        h_cacheClear2[i] = (unsigned char)(0xff - (i & 0xff));
+    }
+
+    //allocate device memory
+    unsigned char *d_idata;
+    checkCudaErrors(cudaMalloc((void **) &d_idata, memSize));
+
+    sdkStartTimer(&timer);
+    checkCudaErrors(cudaEventRecord(start, 0));
+
+    //copy host memory to device memory
+	for (unsigned int i = 0; i < MEMCOPY_ITERATIONS; i++)
+	{
+		checkCudaErrors(cudaMemcpy(d_idata, h_odata, memSize,
+								   cudaMemcpyHostToDevice));
+	}
+
+    checkCudaErrors(cudaEventRecord(stop, 0));
+    checkCudaErrors(cudaDeviceSynchronize());
+    //total elapsed time in ms
+    sdkStopTimer(&timer);
+    checkCudaErrors(cudaEventElapsedTime(&elapsedTimeInMs, start, stop));
+
+    if (PINNED != memMode || bDontUseGPUTiming)
+    {
+        elapsedTimeInMs = sdkGetTimerValue(&timer);
+    }
+
+    sdkResetTimer(&timer);
+
+    //calculate latency in microSeconds
+    latencyInMicroSeconds = (elapsedTimeInMs*1000) / (float)MEMCOPY_ITERATIONS;
+
+    //clean up memory
+    checkCudaErrors(cudaEventDestroy(stop));
+    checkCudaErrors(cudaEventDestroy(start));
+    sdkDeleteTimer(&timer);
+
+    if (PINNED == memMode)
+    {
+        checkCudaErrors(cudaFreeHost(h_odata));
+    }
+    else
+    {
+        free(h_odata);
+    }
+
+    free(h_cacheClear1);
+    free(h_cacheClear2);
+    checkCudaErrors(cudaFree(d_idata));
+
+    return latencyInMicroSeconds;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
