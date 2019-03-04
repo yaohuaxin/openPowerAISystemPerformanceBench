@@ -32,7 +32,7 @@
 #include <iostream>
 #include <cassert>
 
-static const char *sSDKsample = "Latency Test Modified from CUDA Bandwidth Test";
+static const char *sSDKsample = "Add Latency Test to CUDA Bandwidth Test";
 
 // defines, project
 #define MEMCOPY_ITERATIONS  100
@@ -86,7 +86,7 @@ char **pArgv = NULL;
 
 ////////////////////////////////////////////////////////////////////////////////
 // declaration, forward
-int runTest(const int argc, const char **argv);
+int runBandwidthTest(const int argc, const char **argv);
 void testBandwidth(unsigned int start, unsigned int end, unsigned int increment,
                    testMode mode, memcpyKind kind, printMode printmode, memoryMode memMode, int startDevice, int endDevice, bool wc);
 void testBandwidthQuick(unsigned int size, memcpyKind kind, printMode printmode, memoryMode memMode, int startDevice, int endDevice, bool wc);
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     // set logfile name and start logs
     printf("[%s] - Starting...\n", sSDKsample);
 
-    int iRetVal = runTest(argc, (const char **)argv);
+    int iRetVal = runBandwidthTest(argc, (const char **)argv);
 
     if (iRetVal < 0)
     {
@@ -129,7 +129,7 @@ int main(int argc, char **argv)
 ///////////////////////////////////////////////////////////////////////////////
 //Parse args, run the appropriate tests
 ///////////////////////////////////////////////////////////////////////////////
-int runTest(const int argc, const char **argv)
+int runBandwidthTest(const int argc, const char **argv)
 {
     int start = DEFAULT_SIZE;
     int end = DEFAULT_SIZE;
