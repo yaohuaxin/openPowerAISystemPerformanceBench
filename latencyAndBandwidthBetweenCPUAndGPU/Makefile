@@ -15,6 +15,7 @@ ifeq ($(dbg),1)
       NVCCFLAGS += -g -G
       BUILD_TYPE := debug
 else
+      NVCCFLAGS += -O3
       BUILD_TYPE := release
 endif
 
