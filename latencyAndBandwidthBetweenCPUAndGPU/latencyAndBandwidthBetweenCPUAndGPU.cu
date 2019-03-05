@@ -1137,14 +1137,13 @@ void outputLatencyMatrix(int numGPUs, bool p2p, memcpyKind kind)
         {
         	performDeviceToDeviceCopy(buffersD2D[i], buffersD[i], 1, repeat, stream[i], i);
         }
+        float cpu_time_ms = sdkGetTimerValue(&stopWatch);
 
         cudaEventRecord(stop[i], stream[i]);
         // Now that the work has been queued up, release the stream
         *flag = 1;
         cudaStreamSynchronize(stream[i]);
         cudaCheckError();
-
-        float cpu_time_ms = sdkGetTimerValue(&stopWatch);
 
         float gpu_time_ms;
         cudaEventElapsedTime(&gpu_time_ms, start[i], stop[i]);
@@ -1154,7 +1153,7 @@ void outputLatencyMatrix(int numGPUs, bool p2p, memcpyKind kind)
 
     }
 
-    printf("  GPU side latency\n");
+    printf("  GPU side latency (us)\n");
 
     for (int i = 0; i < numGPUs; i++) {
         printf("%8d ", i);
@@ -1166,7 +1165,7 @@ void outputLatencyMatrix(int numGPUs, bool p2p, memcpyKind kind)
     }
     printf("\n");
 
-    printf("  CPU side latency\n");
+    printf("  CPU side latency (us)\n");
 
     for (int i = 0; i < numGPUs; i++) {
         printf("%8d ", i);
